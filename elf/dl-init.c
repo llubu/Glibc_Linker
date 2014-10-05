@@ -19,8 +19,13 @@
 
 #include <stddef.h>
 #include <ldsodefs.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
-
+extern uint64_t elider_checker;
+static int elider_initcount = 0;
 /* Type of the initializer.  */
 typedef void (*init_t) (int, char **, char **);
 
@@ -30,6 +35,52 @@ extern int _dl_starting_up;
 extern int _dl_starting_up_internal attribute_hidden;
 #endif
 
+// elider-patch:-
+// This patches all the calls/jmps to plt section with the resolved addresses.
+// The call/jmp addresses and resolved addresses are fetched from a binary trace file precomputed
+// using the Intel PIN. Keep in mind that the resolved addresses in the trace file are absolute.
+// You should make them relative to the corresponding call/jmp addresses.
+
+static void elider_patchup(void)
+{
+    uint64_t elider[2]; 	// fetched from the trace file
+    uint32_t *patch_addr = NULL;
+    int32_t res_addr = 0;
+    int fd = -1, ret = 16;
+
+    if ( (fd = __open("/var/services/homes/adabral/wildgoose-gcc/libc/patch.bin", O_RDONLY)) == -1)
+    { // NO PATCHING DONE
+	return;
+    }
+
+    while ( ret == 16 && ret != -1)
+    {
+	ret = __read(fd, &elider, 16);				// read a pair of address from the trace file
+	patch_addr = (uint32_t *) ( elider[0] + 1 );		// Adding 1 takes care of NOT overwritting call/jmp opcode
+	res_addr = (int32_t)((int32_t)(elider[1] - (int32_t) elider[0]) - 5 );		// Relative address to the next ins
+
+	if (ret < 16)						// Either EOF of trace file or something wrong BREAK OUT NOW!!
+    	{
+	    break;
+    	}
+	
+	if ( (elider[0] > elider_checker) || (elider[1] > elider_checker) )
+	{
+	    goto nopatch;
+	}
+
+	// PATHCHING NOW
+	*(patch_addr) = res_addr;				// PATCHING 4 bytes of resolved relative address
+	// RESETTING VARS
+nopatch:
+	patch_addr = NULL;
+	res_addr = 0;
+	elider[0] = 0;
+	elider[1] = 0;
+    }
+    __close(fd);
+    // All patching done return now
+}
 
 static void
 call_init (struct link_map *l, int argc, char **argv, char **env)
@@ -133,6 +184,24 @@ _dl_init (struct link_map *main_map, int argc, char **argv, char **env)
   while (i-- > 0)
     call_init (main_map->l_initfini[i], argc, argv, env);
 
+  //elider- All DSOs are initialized by now as we are using LD_BIND_NOW = 1. NOW DO THE PATCHING - 
+  // _dl_lazy = *(getenv ("LD_BIND_NOW") ?: "") == '\0'; USE this decide if to PATCH OR NOT
+  // elider:
+  // Call the patch function only when LD_BIND_NOW = 1 is set as environment variable
+  //
+  if (!(GLRO(dl_lazy)))
+  {
+//      if (elider_initcount > 4)
+//      {
+//	  goto elider_skip1;
+//      }
+      elider_patchup();
+
+//elider_skip1:
+     elider_initcount++;
+  }
+  
+     
 #ifndef HAVE_INLINED_SYSCALLS
   /* Finished starting up.  */
   INTUSE(_dl_starting_up) = 0;

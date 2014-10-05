@@ -36,9 +36,19 @@
 #include <stackinfo.h>
 #include <caller.h>
 #include <sysdep.h>
-
+#include <fcntl.h>	//elider
+#include <unistd.h>	//elider
+#include <sys/ioctl.h>	//elider
 #include <dl-dst.h>
 
+// elider-global vars
+uint64_t eliderbase = 0x2000000;
+extern uint64_t elider_checker = 0x2000000;	// this is used in dl-init.c:elider_patchup() to check for the patch address
+int elider_lbr_fd = 0;
+int elider_lbr_flag = 0;
+uint32_t elider_patch_count = 0;
+uint32_t elider_skip_count = 0;
+//elider global vars end
 /* On some systems, no flag bits are given to specify file mapping.  */
 #ifndef MAP_FILE
 # define MAP_FILE	0
@@ -829,6 +839,40 @@ lose (int code, int fd, const char *name, char *realname, struct link_map *l,
 }
 
 
+// elider-lbr test function -should be moved to runtime-resolver later
+
+void * _dl_elider_lbr(void)
+{
+    int n, i = 0;
+    n = 5;
+    uint64_t arr[32];
+    
+    if (0 == elider_lbr_fd)
+    {
+	_dl_debug_printf_c("\n ELIDER LBR FD IS 0: SOMETHING WRONG \n CHECK.. STUCK IN WHILE LOOP FOR NOW\n");
+	while (1);
+    }
+
+    __ioctl(elider_lbr_fd, n, (void *)arr);
+    _dl_debug_printf("NEW_TTTTTTTTTTTTT\n");
+//    for (i = 0; i < 32; i++)
+//    {
+	_dl_debug_printf_c("ZERO::0x%0*lx::0x%0*lx::0x%0*lx::0x%0*lx::\n", (int)sizeof (void*)*2, arr[0], (int)sizeof (void*)*2, arr[2], (int)sizeof (void*)*2, arr[7], (int)sizeof (void*)*2, arr[12]);
+//	_dl_debug_printf_c("::0x%0*lx::\n", (int)sizeof (void*)*2, arr[i]);
+//    }
+    _dl_debug_printf_c("COUNT::%0*lx::%0*lx::\n", (int)sizeof (void *)*2, elider_patch_count, (int)sizeof(void*)*2, elider_skip_count);
+    if ( (arr[0] == (uint64_t) 0xffffffff8100ba4e) || (arr[12] == (uint64_t) 0xffffffff8100ba4e) || (arr[12] > elider_checker) )
+    {
+	++elider_skip_count;
+	return 0;
+    }
+
+//    while (1);
+    ++elider_patch_count;
+    _dl_debug_printf_c("PATCH ADDR::0x%0*lx:\n", (int)sizeof (void *)*2, arr[12]);
+    return arr[12];	// local var will not exist after ret, check here only and then modify
+}
+
 /* Map in the shared object NAME, actually located in REALNAME, and already
    opened on FD.  */
 
@@ -852,6 +896,12 @@ _dl_map_object_from_fd (const char *name, int fd, struct filebuf *fbp,
   int errval = 0;
   struct r_debug *r = _dl_debug_initialize (0, nsid);
   bool make_consistent = false;
+//elider open fd for lbr
+	  if (!elider_lbr_flag)
+	  {
+	      elider_lbr_fd = __open("/dev/lbr", O_RDONLY);
+	      elider_lbr_flag = 1;
+	  }
 
   /* Get file information.  */
   if (__builtin_expect (__fxstat64 (_STAT_VER, fd, &st) < 0, 0))
@@ -1193,16 +1243,90 @@ cannot allocate TLS data structures for initial thread");
 	   As a refinement, sometimes we have an address that we would
 	   prefer to map such objects at; but this is only a preference,
 	   the OS can do whatever it likes. */
-	ElfW(Addr) mappref;
-	mappref = (ELF_PREFERRED_ADDRESS (loader, maplength,
-					  c->mapstart & GLRO(dl_use_load_bias))
-		   - MAP_BASE_ADDR (l));
 
-	/* Remember which part of the address space this object uses.  */
-	l->l_map_start = (ElfW(Addr)) __mmap ((void *) mappref, maplength,
-					      c->prot,
+	  
+//elider-comment
+//
+//	  ElfW(Addr) mappref;
+//	mappref = (ELF_PREFERRED_ADDRESS (loader, maplength,
+//					  c->mapstart & GLRO(dl_use_load_bias))
+//		   - MAP_BASE_ADDR (l));
+//
+//	/* Remember which part of the address space this object uses.  */
+//	l->l_map_start = (ElfW(Addr)) __mmap ((void *) mappref, maplength,
+//					      c->prot,
+//					      MAP_COPY|MAP_FILE,
+//					      fd, c->mapoff);
+	
+//eldier-comment end
+// some constants to force some DSO used by apache to load at a particular address even if they are unloaded & reloaded again
+
+// LOAD ADDRESS CONSTANTS
+	uint64_t elider_mod_fcgid = 0x9e00000;
+	uint64_t elider_php = 0xa400000;
+	uint64_t elider_nsl = 0xb000000;
+	uint64_t elider_xml = 0xb600000;
+	const char *elider_fcgidname = "/var/services/homes/adabral/wildgoose-gcc/benchmark/web_server/modules/mod_fcgid.so";
+	const char *elider_phpname = "/var/services/homes/adabral/wildgoose-gcc/benchmark/web_server/modules/libphp5.so"; 
+	const char *elider_nslname = "libnsl.so.1";
+	const char *elider_xmlname = "libxml2.so.2"; 
+
+        // DSO mod_fcgid.so
+	if (( 0 == (strcmp(name, elider_fcgidname))) && eliderbase > elider_mod_fcgid )
+	{
+	    l->l_map_start = (ElfW(Addr)) __mmap ((void *) elider_mod_fcgid, maplength,
+					      c->prot | PROT_WRITE,
 					      MAP_COPY|MAP_FILE,
 					      fd, c->mapoff);
+	    elider_checker = elider_mod_fcgid + 0x600000; 
+	    goto elider_sameload;
+	}
+	
+	// DSO libphp5.so
+	if (( 0 == (strcmp(name, elider_phpname)))  && eliderbase > elider_php )
+	{
+	    l->l_map_start = (ElfW(Addr)) __mmap ((void *) elider_php, maplength,
+					      c->prot | PROT_WRITE,
+					      MAP_COPY|MAP_FILE,
+					      fd, c->mapoff);
+	    elider_checker = elider_php + 0x600000; 
+	    goto elider_sameload;
+	}
+
+	
+	// DSO lib_nsl.so
+	if (( 0 == (strcmp(name, elider_nslname))) && eliderbase > elider_nsl )
+	{
+	    l->l_map_start = (ElfW(Addr)) __mmap ((void *) elider_nsl, maplength,
+					      c->prot | PROT_WRITE,
+					      MAP_COPY|MAP_FILE,
+					      fd, c->mapoff);
+	    elider_checker = elider_nsl + 0x600000; 
+	    goto elider_sameload;
+	}
+
+	// DSO lib_xml2.so.2
+	if (( 0 == (strcmp(name, elider_xmlname))) && eliderbase > elider_xml )
+	{
+	    l->l_map_start = (ElfW(Addr)) __mmap ((void *) elider_xml, maplength,
+					      c->prot | PROT_WRITE,
+					      MAP_COPY|MAP_FILE,
+					      fd, c->mapoff);
+	    elider_checker = eliderbase; 
+	    goto elider_sameload;
+	}
+
+
+	l->l_map_start = (ElfW(Addr)) __mmap ((void *) eliderbase, maplength,
+					      c->prot | PROT_WRITE,
+					      MAP_COPY|MAP_FILE,
+					      fd, c->mapoff);
+
+	eliderbase += 0x600000;
+	elider_checker = eliderbase;
+
+elider_sameload:	
+
 	if (__builtin_expect ((void *) l->l_map_start == MAP_FAILED, 0))
 	  {
 	  map_error:
@@ -1246,17 +1370,19 @@ cannot allocate TLS data structures for initial thread");
     l->l_map_end = l->l_map_start + maplength;
     l->l_contiguous = !has_holes;
 
+/* elider-start This mmap is used for binaries which will be loaded at a fixed address. PROT_WRITE flag is added to make the binary .text section with write permission */
+ 
     while (c < &loadcmds[nloadcmds])
       {
 	if (c->mapend > c->mapstart
 	    /* Map the segment contents from the file.  */
 	    && (__mmap ((void *) (l->l_addr + c->mapstart),
-			c->mapend - c->mapstart, c->prot,
+			c->mapend - c->mapstart, c->prot | PROT_WRITE,
 			MAP_FIXED|MAP_COPY|MAP_FILE,
 			fd, c->mapoff)
 		== MAP_FAILED))
 	  goto map_error;
-
+//elider-end
       postmap:
 	if (c->prot & PROT_EXEC)
 	  l->l_text_end = l->l_addr + c->mapend;
@@ -1304,12 +1430,14 @@ cannot allocate TLS data structures for initial thread");
 			      GLRO(dl_pagesize), c->prot);
 	      }
 
+//elider-start ADD PROT_WRITE FLAG -really needed ??
+
 	    if (zeroend > zeropage)
 	      {
 		/* Map the remaining zero pages in from the zero fill FD.  */
 		caddr_t mapat;
 		mapat = __mmap ((caddr_t) zeropage, zeroend - zeropage,
-				c->prot, MAP_ANON|MAP_PRIVATE|MAP_FIXED,
+				c->prot | PROT_WRITE, MAP_ANON|MAP_PRIVATE|MAP_FIXED,
 				-1, 0);
 		if (__builtin_expect (mapat == MAP_FAILED, 0))
 		  {
@@ -1318,7 +1446,7 @@ cannot allocate TLS data structures for initial thread");
 		  }
 	      }
 	  }
-
+//elider-end
 	++c;
       }
   }

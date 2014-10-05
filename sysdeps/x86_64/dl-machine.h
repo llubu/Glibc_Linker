@@ -233,7 +233,9 @@ elf_machine_fixup_plt (struct link_map *map, lookup_t t,
 		       const Elf64_Rela *reloc,
 		       Elf64_Addr *reloc_addr, Elf64_Addr value)
 {
+//elider-comment and add
   return *reloc_addr = value;
+//   return value;
 }
 
 /* Return the final value of a plt relocation.  On x86-64 the

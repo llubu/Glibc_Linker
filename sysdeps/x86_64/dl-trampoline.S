@@ -36,10 +36,35 @@ _dl_runtime_resolve:
 	movq %rdi, 32(%rsp)
 	movq %r8, 40(%rsp)
 	movq %r9, 48(%rsp)
+#elider:- call to lbr ioctl to get the branch address
+#        call _dl_elider_lbr
+#	movq %rax, %r8		# Patch Addr returned from LBR
+
 	movq 64(%rsp), %rsi	# Copy args pushed by PLT in register.
 	movq 56(%rsp), %rdi	# %rdi: link_map, %rsi: reloc_index
+#	pushq %rax		# elider push lbr ret value to stack
 	call _dl_fixup		# Call resolver.
 	movq %rax, %r11		# Save return value
+#	movq %r11, %r9		# elider -copy of resolved address
+#	popq %r8		# elider pop lbr pushed value into r8
+
+#	movq 72(%rsp), %r8	# elider: Copying RET address of the stack
+#	subq %r8, %r11		# subtracting -elider-
+#	subq $5, %r11
+#	addq $1, %r8		# TO get the addr to be patched ret from LBR
+#	movq %r8, %rax
+#	cmp $1, %rax
+#	je elider_while
+#	movq %r11, %rax		# --
+#elider_patch:
+#	jmp elider_patch
+#	movl %eax, (%r8)	# Patching
+	
+#elider_while:
+#	jmp elider_while
+
+#	movq %r9, %r11		#restoring resolved address elider
+
 	movq 48(%rsp), %r9	# Get register content back.
 	movq 40(%rsp), %r8
 	movq 32(%rsp), %rdi
